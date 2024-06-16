@@ -1,0 +1,15 @@
+# documentation
+*.pdf
+*.docx
+*.xlsx
+*.png
+*.jpg
+
+# python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# jupyter
+.ipynb_checkpoints
