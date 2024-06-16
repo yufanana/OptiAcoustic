@@ -145,33 +145,36 @@ def plot_2d_sonar(x, title):
     plt.ylabel("range (m)")
 
 
-def plot_dual_pov(p, Qs_proj, f):
+def plot_dual_pov(p, Qs_proj, K):
     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+    fig.suptitle("POV of camera and sonar")
     ax[0].scatter(p[0, :], p[1, :], s=5)
     ax[0].set_title("Camera frame")
-    ax[0].set_xlabel("X (m)")
-    ax[0].set_ylabel("Y (m)")
-    ax[0].set_xlim(0, f)
-    ax[0].set_ylim(0, f)
+    ax[0].set_xlabel("x (pixels)")
+    ax[0].set_ylabel("y (pixels)")
+    ax[0].set_xlim(-K[0, 0]/2 + K[0, 2], K[0, 0]/2 + K[0, 2])
+    ax[0].set_ylim(-K[0, 0]/2 + K[1, 2], K[0, 0]/2 + K[1, 2])
     ax[0].set_aspect("equal")
     ax[1].scatter(Qs_proj[0, :], Qs_proj[1, :], s=5)
     ax[1].set_title("Optical view from sonar's position")
-    ax[1].set_xlabel("X (m)")
-    ax[1].set_ylabel("Y (m)")
-    ax[1].set_xlim(0, f)
-    ax[1].set_ylim(0, f)
+    ax[1].set_xlabel("x (pixels)")
+    ax[1].set_ylabel("y (pixels)")
+    ax[1].set_xlim(-K[0, 0]/2 + K[0, 2], K[0, 0]/2 + K[0, 2])
+    ax[1].set_ylim(-K[0, 0]/2 + K[1, 2], K[0, 0]/2 + K[1, 2])
     ax[1].set_aspect("equal")
 
 
-def plot_dual_projection(p, s, f):
+def plot_dual_projection(p, s, K):
     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+    fig.suptitle("Projection of camera and sonar")
     ax[0].scatter(p[0, :], p[1, :], s=5)
     ax[0].set_title("Camera frame")
-    ax[0].set_xlabel("X (m)")
-    ax[0].set_ylabel("Y (m)")
+    ax[0].set_xlabel("x (pixels)")
+    ax[0].set_ylabel("y (pixels)")
     ax[0].set_aspect("equal")
-    ax[0].set_xlim(0, f)
-    ax[0].set_ylim(0, f)
+    ax[0].set_xlim(-K[0, 0]/2 + K[0, 2], K[0, 0]/2 + K[0, 2])
+    ax[0].set_ylim(-K[0, 0]/2 + K[1, 2], K[0, 0]/2 + K[1, 2])
+    # ax[0].set_ylim(0, f)
     ax[0].set_aspect("equal")
     ax[1].scatter(s[1, :], s[0, :], s=5)
     ax[1].set_title("Sonar frame")
@@ -181,47 +184,53 @@ def plot_dual_projection(p, s, f):
 
 def main():
     Qw = box3d(n=16)  # shape (3, 240)
+    tw = np.array([[1.0, 0., 0.]]).T
+    Qw = Qw + tw
     # 3D points centered around origin of {world}
     # +x is right, +y is down, +z is forward
 
     # Camera extrinsics, {camera} to {world}
-    distance = 10.0
-    tc_y = -0.5
+    distance = 10.0 # plane dist
+    tc_y = -0.5     
     # theta_x = -15.0  # degrees (pitch down)
     # Rc = Rotation.from_euler("xyz", [theta_x / 180.0, 0, 0]).as_matrix()
     Rc = np.eye(3)
     tc = np.array([[0, tc_y, distance]]).T
+    Qc = Rc @ Qw + tc  # points in {camera}
 
     # Camera intrinsics
     f = 800
-    deltax = 400
-    deltay = 400
+    deltax = 0
+    deltay = 0
     K = camera_intrinsic(f, (deltax, deltay))
-    # resolution = 800x800
-    # assuming principal point is the middle of the img
+    # resolution = 800x800, assuming principal point is the image center
 
     # Parallel camera configuration
-    tx = 0.1  # between {camera} and {sonar}
+    tx = 0.1  # baseline dist between {camera} and {sonar}
     t = np.array([[tx, 0, 0]]).T
     R = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]])  # 90 degree rotation around x-axis
     # R = np.eye(3)
 
-    # Define sonar frame ??{sonar} to {world}??
+    # Sonar extrinsics, {sonar} to {world}
     # Rs = np.eye(3)
     ts = np.array([[0, 0.1, distance]]).T
+    Rs = np.array([[0, 0, 1], [1, 0, 0], [0, 1, 0]])  # 90 degree rotation around x-axis
+    # Qs = Rs @ Qw + ts
+    # print("Qw: \n", Qw)
+    # print("Qs: \n", Qs)
     Qs = Qw + ts
-
-    Qc = Rc @ Qw + tc  # points in {camera}
+    Qs_proj = project_optical(K, np.eye(3), np.array([[0, -0.4, 0]]).T, Qs)
 
     # Projection
     p = project_optical(K, Rc, tc, Qw)
     s = project_sonar(Qs)
 
-    # Filter points with theta more than 150 degrees, plot them in 3D
-    # mask = (s[1, :]) > 3
+    # Identify points of interest
+    # mask = (abs(s[1, :]) > 3.0) & (abs(s[0, :]) < 10.2) & (abs(s[0, :]) > 9.8)
     # inv_mask = np.logical_not(mask)
     # fig = plt.figure(figsize=(6, 6))
     # ax = fig.add_subplot(projection="3d")
+    # print(Qs[:, mask])
     # ax.scatter(Qs[0, mask], Qs[1, mask], Qs[2, mask], c="r")
     # ax.scatter(Qs[0, inv_mask], Qs[1, inv_mask], Qs[2, inv_mask], c="b")
     # ax.set_xlabel("X (m)")
@@ -231,21 +240,17 @@ def main():
     # ax.view_init(elev=-60, azim=-85, roll=0)
     # ax.set_title("3D points in {sonar} with masked points in red")
 
-    # Optical projection of sonar points
-    Qs_proj = project_optical(K, np.eye(3), np.array([[0, -0.4, 0]]).T, Qs)
-
+    # Reconstruction
     z_range = range_solution(s, p, K, R, t)
-
-    print(np.min(z_range), np.max(z_range))
     Xo = (p[0, :] - deltax) * z_range / f
     Yo = (p[1, :] - deltay) * z_range / f
     reconstructed = np.vstack((Xo, Yo, z_range))
 
     # Plot
-    plot_3d(Qw, "3D points in {world}")
+    # plot_3d(Qw, "3D points in {world}")
     # plot_3d(Qs, "3D points in {sonar}")
-    plot_dual_pov(p, Qs_proj, f)
-    plot_dual_projection(p, s, f)
+    plot_dual_pov(p, Qs_proj, K)
+    plot_dual_projection(p, s, K)
     plot_3d(reconstructed, "Reconstruction with z_range in {optical}", c="r")
     plt.show()
 
