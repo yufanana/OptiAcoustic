@@ -10,6 +10,7 @@
 *.pyo
 *.pyd
 __pycache__/
+*dump*
 
 # jupyter
 .ipynb_checkpoints
