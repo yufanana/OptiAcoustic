@@ -1,19 +1,38 @@
 #!/usr/bin/env python3
 
-import cv2
 import logging
-import sys
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import itertools as it
+from argparse import ArgumentParser
 from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares, minimize
 from tqdm import tqdm
 
-# logging.basicConfig(
-#     stream=sys.stderr,
-#     level=logging.DEBUG,
-# )
+
+def parse_args(argv=None):
+    """
+    Argument parsing routine.
+
+    :param list argv: A list of argument strings.
+    :return: A parsed and verified arguments namespace.
+    :rtype: :py:class:`argparse.Namespace`
+    """
+
+    parser = ArgumentParser(
+        description=(
+            "Python simulation of optical and sonar sensors for 3D reconstruction."
+        )
+    )
+    parser.add_argument(
+        "-l",
+        "--log_level",
+        choices=["debug", "info", "warning", "error", "critical"],
+        default="info",
+        help="logging level",
+    )
+    args = parser.parse_args(argv)
+    return args
 
 
 def box3d(n=16):
@@ -325,7 +344,6 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
         xi, yi, ri, thi = X
         si = np.vstack((ri, thi))
         pi = np.vstack((xi, yi))
-        ep2 = epipolar_value_parallel(si, pi, K, R, t)
         ep = epipolar_value(si, pi, K, R, t)
         residual = (
             (xi - p[0, i]) ** 2 / (p_sd[0] ** 2)
@@ -334,25 +352,11 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
             + (thi - s[1, i]) ** 2 / (s_sd[1] ** 2)
             + lambda_ * abs(ep)
         )
-        # if j == 30 or j == 0:
-        #     print(
-        #         # (xi - p[0, i]) ** 2 / (p_sd[0]**2),
-        #         # (yi - p[1, i]) ** 2 / (p_sd[1]**2),
-        #         # (ri - s[0, i]) ** 2 / (s_sd[0]**2),
-        #         # (thi - s[1, i]) ** 2 / (s_sd[1]**2),
-        #         f"j: {j} ep: {ep}",
-        #         f"j: {j} ep2: {ep2}",
-        #     )
-        if j < 50:
-            residuals[i, j] = residual
-            j += 1
         return residual
-
-    residuals = -100.0 * np.ones((240, 50))
 
     p_mle = np.zeros(p.shape)
     s_mle = np.zeros(s.shape)
-    failed = 0
+    n_failed = 0
     bounds = np.array(
         [
             [-K[0, 0], K[0, 0]],
@@ -361,31 +365,28 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
             [-0.5, 0.5],
         ]
     )
-    print("Running MLE...")
+    logging.info("Running MLE...")
     for i in tqdm(range(s.shape[1])):  # for each point
-        j = 0   # for residuals
+        j = 0  # for residuals
 
         # Optimize point
         x0 = np.vstack((p[0, i], p[1, i], s[0, i], s[1, i])).reshape(-1)
-        result = minimize(objective_func, x0, method="Nelder-Mead", bounds=bounds)
+        result = minimize(
+            objective_func, x0, method="Nelder-Mead", bounds=bounds
+        )
         p_mle[:, i] = result.x[:2]
         s_mle[:, i] = result.x[2:]
 
-        # Process result
-        # if i % 10 == 0:
-            # print(f"\n\tpoint i: {i}\n\tx0: {x0}\n\tx: {result.x}\n\tcost: {result.fun}")
-        # if i == 50:
-        #     plt.figure()
-        #     plt.plot(residuals[0, :])
-        #     plt.plot(residuals[25, :])
-        #     plt.plot(residuals[50, :])
-        #     plt.xlabel("Iteration")
-        #     plt.ylabel("Residual")
+        # Review result
+        if i % 10 == 0:
+            logging.debug(
+                f"\n\tpoint i: {i}\n\tx0: {x0}\n\tx: {result.x}\n\tcost: {result.fun}"
+            )
         if result.success is not True:
-            failed += 1
-            print(f"Optimization failed for point {i}")
-            print(result.message)
-    print(f"Failed: {failed}")
+            n_failed += 1
+            logging.debug(f"Optimization failed for point {i}")
+            logging.debug(result.message)
+    logging.info(f"Failed optimization: {n_failed}")
     return p_mle, s_mle
 
 
@@ -553,6 +554,14 @@ def plot_dual_projection(s, p, K, title):
 
 
 def main():
+    # Logging
+    args = parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper()),
+        format="[%(levelname)s]: %(message)s",
+    )
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
     # World config
     d_baseline = 0.25  # baseline dist between {camera} and {sonar}
     d_plane = 2.0  # plane dist
@@ -596,34 +605,34 @@ def main():
     plot_epipolar_values(s, p, s_n, p_n, K, Ros, t_os)
 
     # Optimize
-    epi_noise = np.array(
-        [
-            epipolar_value(s_n[:, i], p_n[:, i], K, Ros, t_os)
-            for i in range(s.shape[1])
-        ]
-    )
+    # epi_noise = np.array(
+    #     [
+    #         epipolar_value(s_n[:, i], p_n[:, i], K, Ros, t_os)
+    #         for i in range(s.shape[1])
+    #     ]
+    # )
     # mean_ep = np.median(abs(epi_noise))
-    # print(f"Mean epipolar value: {mean_ep}")
+    # logging.debug(f"Mean epipolar value: {mean_ep}")
+    
     lambda_ = 3e-3  # regularization
     p_mle, s_mle = maximum_likelihood_estimate(
         s_n, p_n, K, Ros, t_os, s_noise_sd, p_noise_sd, lambda_
     )
 
     # Azimuth solution
-    # Reconstruct
     Zo_azi_mle = azimuth_solution(s_mle, p_mle, K, Ros, t_os)
     Zo_azi = azimuth_solution(s_n, p_n, K, Ros, t_os)
     Qo_azi_mle = reconstruct(p, K, Zo_azi_mle)
     Qo_azi = reconstruct(p, K, Zo_azi)
-    Qw_azi = np.linalg.inv(Rwo) @ (Qo_azi - t_wo) # to {world}
-    Qw_azi_mle = np.linalg.inv(Rwo) @ (Qo_azi_mle - t_wo) # to {world}
+    Qw_azi = np.linalg.inv(Rwo) @ (Qo_azi - t_wo)  # to {world}
+    Qw_azi_mle = np.linalg.inv(Rwo) @ (Qo_azi_mle - t_wo)  # to {world}
 
     # Rangle solution
     Zo_range = range_solution(s, p, K, Ros, t_os)
     Qo_range = reconstruct(p, K, Zo_range)
     # Qo_range_origin = np.mean(Qo_range, axis=1).reshape(-1, 1)
     # Qo_range_align = Qw + Qo_range_origin
-    Qw_range = np.linalg.inv(Rwo) @ (Qo_range - t_wo) # to {world}
+    Qw_range = np.linalg.inv(Rwo) @ (Qo_range - t_wo)  # to {world}
 
     # m solution
     # Zo_m = m_solution(s, p, Ros, t_os)
@@ -633,7 +642,7 @@ def main():
     # Qw_m = np.linalg.inv(Rwo) @ (Qo_m - t_wo) # to {world}
 
     # Plot
-    plot_dual_projection(s, p, K, "Projection of camera and sonar")
+    plot_dual_projection(s, p, K, "Projection of true measurements")
     plot_dual_projection(s_n, p_n, K, "Projection of noisy measurements")
 
     plot_3d_reconstruction(Qw, Qw_range, "Range solution in {world}")
@@ -653,7 +662,7 @@ def main():
         Qw,
         Qw_azi,
         Qw_azi_mle,
-        "Azimuth solution",
+        "Azimuth solution\n",
         r"MLE Azimuth solution $\lambda=$" + str(lambda_),
         scale,
     )
