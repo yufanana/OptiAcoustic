@@ -18,7 +18,7 @@ DAVE Simulation
 - [ ] Add sonar as link to robot
 - [ ] Teleop robot
 
-Debugging notes
+MLE debugging takeaways
 
 - Epipolar parallel camera: U matrix is only valid for tx != 0
 - Take absolute value of epipolar value

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 
+import yaml
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import itertools as it
 from argparse import ArgumentParser
 from scipy.spatial.transform import Rotation
-from scipy.optimize import least_squares, minimize
+from scipy.optimize import minimize
 from tqdm import tqdm
+
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 
 def parse_args(argv=None):
@@ -316,7 +319,7 @@ def epipolar_value_parallel(s, p, K, R, t):
     return ep.item()
 
 
-def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
+def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_, method):
     """
     Maximum likelihood estimate of the optical and sonar measurements.
 
@@ -326,6 +329,10 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
         K: Camera intrinsics matrix
         R: Rotation matrix from {camera} to {sonar}
         t: Translation vector from {camera} to {sonar}
+        s_sd: (sigma_r, sigma_theta), standard deviation of sonar noise
+        p_sd: (sigma_x, sigma_y), standard deviation of camera noise
+        lambda_: Regularization parameter
+        method: Optimization method
 
     Returns:
         s_mle: 2D points in {sonar} as (r, theta), shape (2, n)
@@ -365,15 +372,12 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
             [-0.5, 0.5],
         ]
     )
-    logging.info("Running MLE...")
     for i in tqdm(range(s.shape[1])):  # for each point
         j = 0  # for residuals
 
         # Optimize point
         x0 = np.vstack((p[0, i], p[1, i], s[0, i], s[1, i])).reshape(-1)
-        result = minimize(
-            objective_func, x0, method="Nelder-Mead", bounds=bounds
-        )
+        result = minimize(objective_func, x0, method=method, bounds=bounds)
         p_mle[:, i] = result.x[:2]
         s_mle[:, i] = result.x[2:]
 
@@ -392,7 +396,7 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
 
 def reconstruct(p, K, Zo):
     """
-    Reconstruction of 3D points from Z-values using the optical
+    Reconstruction of 3D points in {camera} from Z-values using the optical
     projection model.
     """
     f = K[0, 0]
@@ -491,7 +495,7 @@ def plot_comparison(Q_true, Q1, Q2, title1, title2, scale):
     ax.set_title(title2)
 
 
-def plot_3d_reconstruction(Q_true, Q_rec, title, scale=10.0):
+def plot_3d_reconstruction(Q_true, Q_rec, title, scale=2.0):
     """
     Plot the 3D points of the true and reconstructed scene.
 
@@ -499,6 +503,7 @@ def plot_3d_reconstruction(Q_true, Q_rec, title, scale=10.0):
         Q_true: True 3D points, shape (3, n)
         Q_rec: Reconstructed 3D points, shape (3, n)
         title: Plot title
+        scale: +ve float, plot limits
     """
     fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(projection="3d")
@@ -520,11 +525,11 @@ def plot_3d_reconstruction(Q_true, Q_rec, title, scale=10.0):
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Z (m)")
-    # ax.set_xlim(-scale, scale)
-    # ax.set_ylim(-scale, scale)
-    # ax.set_zlim(-scale, scale)
+    ax.set_xlim(-scale / 2, scale / 2)
+    ax.set_ylim(-scale / 2, scale / 2)
+    ax.set_zlim(-scale / 2, scale / 2)
     ax.set_aspect("equal")
-    ax.legend()
+    # ax.legend(loc='upper right')
     ax.set_title(title)
 
 
@@ -560,33 +565,47 @@ def main():
         level=getattr(logging, args.log_level.upper()),
         format="[%(levelname)s]: %(message)s",
     )
-    logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
-    # World config
-    d_baseline = 0.25  # baseline dist between {camera} and {sonar}
-    d_plane = 2.0  # plane dist
-    scale = 1.0
+    # Load config parameters
+    config_path = "config/sim_config.yaml"
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    d_baseline = config["transforms"]["baseline_distance"]
+    d_plane = config["transforms"]["plane_distance"]
+    scale = config["transforms"]["scale"]
+    t_wo_x = config["transforms"]["camera_x_offset"]
+    t_wo_y = config["transforms"]["camera_y_offset"]
+    f = config["camera_intrinsics"]["focal_length"]
+    delta_x = config["camera_intrinsics"]["delta_x"]
+    delta_y = config["camera_intrinsics"]["delta_y"]
+    s_noise_sd = (
+        config["sensor_noise_std"]["r"],
+        config["sensor_noise_std"]["theta"],
+    )
+    p_noise_sd = (
+        config["sensor_noise_std"]["x"],
+        config["sensor_noise_std"]["y"],
+    )
+    method = config["maximum_likelihood"]["method"]
+    lambda_list = config["maximum_likelihood"]["lambda_values"]
+    logging.info(f"Configuration loaded: {config}")
 
-    Qw = scale * box3d(n=16)  # 3D points centered around origin of {world}
+    # Create object
+    Qw = scale * box3d(n=16)  # 3D points centered at origin of {world}
     # tw = np.array([[0.5, 0., 0.]]).T
     # Qw = Qw + tw      # offset box
 
-    # Parallel camera configuration, R and t from the paper
+    # Parallel camera configuration (R and t from the paper)
     t_os = np.array([[d_baseline, 0, 0]]).T
     Ros = np.array(
         [[1, 0, 0], [0, 0, 1], [0, -1, 0]]
     )  # 90 degree rotation around x-axis
 
     # Camera extrinsics, {world} to {camera}
-    t_wo_x = 0.0
-    t_wo_y = -0.0
     t_wo = np.array([[t_wo_x, t_wo_y, d_plane]]).T
     Rwo = np.eye(3)
     Qo = Rwo @ Qw + t_wo  # points in {camera}
 
-    # Camera intrinsics
-    f = 800
-    delta_x, delta_y = (0, 0)
     K = camera_intrinsic(f, (delta_x, delta_y))
 
     # Sonar extrinsics, {camera} to {sonar}
@@ -595,14 +614,10 @@ def main():
     # Projection
     p = project_optical(K, Rwo, t_wo, Qw)
     s = project_sonar(Qs)
-
-    # Add noise
-    s_noise_sd = (0.01, 0.00175)  # (r, theta)
-    p_noise_sd = (1, 1)  # (x, y)
     s_n, p_n = add_noise(s, p, s_noise_sd, p_noise_sd)
 
     # Check epipolar values should be zero without noise
-    plot_epipolar_values(s, p, s_n, p_n, K, Ros, t_os)
+    # plot_epipolar_values(s, p, s_n, p_n, K, Ros, t_os)
 
     # Optimize
     # epi_noise = np.array(
@@ -613,26 +628,33 @@ def main():
     # )
     # mean_ep = np.median(abs(epi_noise))
     # logging.debug(f"Mean epipolar value: {mean_ep}")
-    
-    lambda_ = 3e-3  # regularization
-    p_mle, s_mle = maximum_likelihood_estimate(
-        s_n, p_n, K, Ros, t_os, s_noise_sd, p_noise_sd, lambda_
-    )
 
-    # Azimuth solution
-    Zo_azi_mle = azimuth_solution(s_mle, p_mle, K, Ros, t_os)
+    # Without MLE
     Zo_azi = azimuth_solution(s_n, p_n, K, Ros, t_os)
-    Qo_azi_mle = reconstruct(p, K, Zo_azi_mle)
     Qo_azi = reconstruct(p, K, Zo_azi)
     Qw_azi = np.linalg.inv(Rwo) @ (Qo_azi - t_wo)  # to {world}
-    Qw_azi_mle = np.linalg.inv(Rwo) @ (Qo_azi_mle - t_wo)  # to {world}
+    plot_3d_reconstruction(Qw, Qw_azi, "Without MLE", scale=scale)
+
+    # Optimize
+    for i, lambda_ in enumerate(lambda_list):
+        logging.info(f"Running MLE for lambda={lambda_:.1E}")
+        p_mle, s_mle = maximum_likelihood_estimate(
+            s_n, p_n, K, Ros, t_os, s_noise_sd, p_noise_sd, lambda_, method
+        )
+        # Azimuth solution
+        Zo_azi_mle = azimuth_solution(s_mle, p_mle, K, Ros, t_os)
+        Qo_azi_mle = reconstruct(p, K, Zo_azi_mle)
+        Qw_azi_mle = np.linalg.inv(Rwo) @ (Qo_azi_mle - t_wo)  # to {world}
+        plot_3d_reconstruction(
+            Qw, Qw_azi_mle, r"$\lambda=$" + f"{lambda_:.1E}", scale=scale
+        )
 
     # Rangle solution
-    Zo_range = range_solution(s, p, K, Ros, t_os)
-    Qo_range = reconstruct(p, K, Zo_range)
+    # Zo_range = range_solution(s, p, K, Ros, t_os)
+    # Qo_range = reconstruct(p, K, Zo_range)
     # Qo_range_origin = np.mean(Qo_range, axis=1).reshape(-1, 1)
     # Qo_range_align = Qw + Qo_range_origin
-    Qw_range = np.linalg.inv(Rwo) @ (Qo_range - t_wo)  # to {world}
+    # Qw_range = np.linalg.inv(Rwo) @ (Qo_range - t_wo)  # to {world}
 
     # m solution
     # Zo_m = m_solution(s, p, Ros, t_os)
@@ -645,7 +667,7 @@ def main():
     plot_dual_projection(s, p, K, "Projection of true measurements")
     plot_dual_projection(s_n, p_n, K, "Projection of noisy measurements")
 
-    plot_3d_reconstruction(Qw, Qw_range, "Range solution in {world}")
+    # plot_3d_reconstruction(Qw, Qw_range, "Range solution in {world}")
     # plot_3d_reconstruction(Qw, Qw_azi, "Azimuth solution in {world}", scale)
     # plot_3d_reconstruction(
     #     Qw, Qw_azi_mle, "MLE Azimuth solution in {world}", scale
