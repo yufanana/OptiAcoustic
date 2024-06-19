@@ -4,8 +4,14 @@ camera_intrinsics:          # in pixels
   delta_y: 0                # y coordinate of principal point
 
 transforms:
-  baseline_distance: 0.25   # distance between camera and sonar
-  plane_distance: 2.0       # distance between camera and object plane
+  baseline_distance:        # distance between camera and sonar
+    - 0.10
+    - 0.25
+    - 0.50
+  plane_distance:           # distance between camera and object plane
+    - 1.0
+    - 2.0
+    - 3.0       
   scale: 1.0                # scale of object/cube
   camera_x_offset: 0.0      # offset of camera in x direction
   camera_y_offset: 0.0      # offset of camera in y direction
@@ -19,10 +25,6 @@ sensor_noise_std:           # standard deviation of gaussian noise
 maximum_likelihood:
   method: "Nelder-Mead"     # optimization method
   lambda_values:            # regularization parameter
-    - 1.0e+2
-    - 1.0e+1
-    - 1.0e-1
     - 1.0e-2
-    - 1.0e-3
-    - 1.0e-4
+    - 0.0
 
