@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 
 import cv2
+import logging
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import itertools as it
 from scipy.spatial.transform import Rotation
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, minimize
 from tqdm import tqdm
+
+# logging.basicConfig(
+#     stream=sys.stderr,
+#     level=logging.DEBUG,
+# )
 
 
 def box3d(n=16):
@@ -124,7 +131,10 @@ def range_solution(s, p, K, R, t):
     f = K[0, 0]
     range_ = s[0, :]
     p = np.vstack((p, f * np.ones(p.shape[1])))
-    z = f * ((range_ * np.linalg.norm(p[:2]) - t.T @ R @ p) / np.linalg.norm(p[:2]) ** 2)
+    z = f * (
+        (range_ * np.linalg.norm(p[:2]) - t.T @ R @ p)
+        / np.linalg.norm(p[:2]) ** 2
+    )
     z = z.reshape(-1)
     return z
 
@@ -154,7 +164,7 @@ def azimuth_solution(s, p, K, R, t):
     for i in range(s.shape[1]):
         num = f * (np.tan(theta[i]) * ty - tx)
         den = (r1 - np.tan(theta[i]) * r2) @ p[:, i]
-        z[i] = (num/den).item()
+        z[i] = (num / den).item()
     return z
 
 
@@ -174,16 +184,21 @@ def form_alpha(p, R):
 
 
 def m_solution(s, p, R, t):
-    ax, ay = form_alpha(p, R)   # shape (n, 3), (n ,3)
+    """
+    3rd closed-form solution for range measurements.
+    """
+    ax, ay = form_alpha(p, R)  # shape (n, 3), (n ,3)
     theta = s[1, :]  # shape (n,)
     z = np.zeros(s.shape[1])
     for i in range(s.shape[1]):
         ax1, ax2, ax3 = ax[i]
         ay1, ay2, ay3 = ay[i]
         th = theta[i]
-        num = ((ay1 * np.tan(th) + ay2) * ax[i] - (ax1 * np.tan(th) + ax2) * ay[i]) @ t
+        num = (
+            (ay1 * np.tan(th) + ay2) * ax[i] - (ax1 * np.tan(th) + ax2) * ay[i]
+        ) @ t
         den = (ay1 * np.tan(th) + ay2) * ax3 - (ax1 * np.tan(th) + ax2) * ay3
-        z[i] = (num/den).item()
+        z[i] = (num / den).item()
     return z
 
 
@@ -194,8 +209,8 @@ def add_noise(s, p, s_noise_sd, p_noise_sd):
     Args:
         s: 2D points in {sonar} as (r, theta), shape (2, n)
         p: 2D points in {camera}, shape (2, n)
-        s_noise_sd: (sigma_r, sigma_theta), Standard deviation of noise in {sonar}
-        p_noise_sd: (sigma_x, sigma_y), Standard deviation of noise in {camera}
+        s_noise_sd: (sigma_r, sigma_theta), standard deviation of sonar noise
+        p_noise_sd: (sigma_x, sigma_y), standard deviation of camera noise
 
     Returns:
         s_n: Noisy sonar measurements, shape (2, n)
@@ -203,35 +218,18 @@ def add_noise(s, p, s_noise_sd, p_noise_sd):
     """
     s_noise_sd = np.array(s_noise_sd).reshape(2, 1)
     p_noise_sd = np.array(p_noise_sd).reshape(2, 1)
-    s_noise = np.random.normal(0, s_noise_sd, s.shape)
-    p_noise = np.random.normal(0, p_noise_sd, p.shape)
-    s_n = s + s_noise
-    p_n = p + p_noise
-
-    # plt.figure()
-    # plt.plot(s_n[0, :], label="r noise")
-    # plt.plot(s_n[1, :], label="theta noise")
-    # plt.plot(s[0, :, ], label="r")
-    # plt.plot(s[1, :], label="theta")
-    # plt.legend()
-
-    # plt.figure()
-    # plt.plot(p_n[0, :], label="x noise")
-    # plt.plot(p_n[1, :], label="y noise")
-    # plt.plot(p[0, :], label="x")
-    # plt.plot(p[1, :], label="y")
-    # plt.legend()
-
+    s_n = s + np.random.normal(0, s_noise_sd, s.shape)
+    p_n = p + np.random.normal(0, p_noise_sd, p.shape)
     return s_n, p_n
 
 
-def epipolar_value(s, p, i, K, R, t):
+def epipolar_value(s, p, K, R, t):
     """
     Compute the epipolar value for a pair of optical and sonar measurements.
 
     Args:
-        p: 2D points in {camera}, shape (2, n)
         s: 2D points in {sonar} as (r, theta), shape (2, n)
+        p: 2D points in {camera} as (x, y), shape (2, n)
         K: Camera intrinsics matrix
         R: Rotation matrix from {camera} to {sonar}
         t: Translation vector from {camera} to {sonar}
@@ -239,29 +237,37 @@ def epipolar_value(s, p, i, K, R, t):
     Returns:
         ep: Epipolar value, shape (n,)
     """
-    f = K[0,0]
-    r = s[0, i]
-    th = s[1, i]
+    if s.shape == (2,):
+        s = s.reshape(-1, 1)
+    if p.shape == (2,):
+        p = p.reshape(-1, 1)
+    f = K[0, 0]
+    r = s[0].item()
+    th = s[1].item()
     r1 = R[0, :].reshape(1, 3)
     r2 = R[1, :].reshape(1, 3)
     tx = t[0, 0]
     ty = t[1, 0]
-    p = np.vstack((p, f*np.ones(p.shape[1])))
-    term1 = (np.linalg.norm(t)**2-r**2)*(r1-np.tan(th)*r2).T @ (r1-np.tan(th)*r2)
-    term2 = (np.tan(th) * ty - tx)**2 * np.eye(3)
+    p = np.vstack((p, f * np.ones(p.shape[1])))
+    term1 = (
+        (np.linalg.norm(t) ** 2 - r**2)
+        * (r1 - np.tan(th) * r2).T
+        @ (r1 - np.tan(th) * r2)
+    )
+    term2 = (np.tan(th) * ty - tx) ** 2 * np.eye(3)
     term3 = 2 * (np.tan(th) * ty - tx) * (r1 - np.tan(th) * r2).T @ t.T @ R
-    ep = p[:,i].T @ (term1 + term2 + term3) @ p[:,i]
-    return ep
+    ep = p.T @ (term1 + term2 + term3) @ p
+    return ep.item()
 
 
-def epipolar_value_parallel(s, p, i, K, R, t):
+def epipolar_value_parallel(s, p, K, R, t):
     """
     Compute the epipolar value for a pair of optical and sonar measurements
-    for parallel camera configuration.
+    for parallel camera configuration (tx != 0).
 
     Args:
-        p: 2D points in {camera}, shape (2, n)
-        s: 2D points in {sonar} as (r, theta), shape (2, n)
+        p: 2D points in {camera}, shape (2, 1)
+        s: 2D points in {sonar} as (r, theta), shape (2, 1)
         K: Camera intrinsics matrix
         R: Rotation matrix from {camera} to {sonar}
         t: Translation vector from {camera} to {sonar}
@@ -269,20 +275,27 @@ def epipolar_value_parallel(s, p, i, K, R, t):
     Returns:
         ep: Epipolar value, shape (n,)
     """
-    f = K[0,0]
-    r = s[0, i]
-    th = s[1, i]
+    if s.shape == (2,):
+        s = s.reshape(-1, 1)
+    if p.shape == (2,):
+        p = p.reshape(-1, 1)
+    f = K[0, 0]
+    r = s[0].item()
+    th = s[1].item()
     tx = t[0, 0]
-    p = np.vstack((p, f*np.ones(p.shape[1])))
-    beta = tx/r
-    k2 = 1 + np.tan(th)**2
-    U = r**2 * np.array([[-1, 0, np.tan(th)], 
-                         [0, beta**2, 0], 
-                         [np.tan(th), 0, k2 * beta**2 - (np.tan(th))**2]])
-    ep = p[:,i].T @ U @ p[:,i]
-    return ep
-    
-    
+    p = np.vstack((p, f * np.ones(p.shape[1])))
+    beta = tx / r
+    k2 = 1 + np.tan(th) ** 2
+    U = r**2 * np.array(
+        [
+            [-1, 0, np.tan(th)],
+            [0, beta**2, 0],
+            [np.tan(th), 0, k2 * beta**2 - (np.tan(th)) ** 2],
+        ]
+    )
+    ep = p.T @ U @ p
+    return ep.item()
+
 
 def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
     """
@@ -300,7 +313,7 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
         p_mle: 2D points in {camera}, shape (2, n)
     """
 
-    def compute_residuals(X):
+    def objective_func(X):
         """
         Args:
             X: (xi, yi, ri, thi), vector to optimize, shape (4,)
@@ -308,29 +321,78 @@ def maximum_likelihood_estimate(s, p, K, R, t, s_sd, p_sd, lambda_):
         Returns:
             residual: scalar value
         """
-        nonlocal i
+        nonlocal i, j
         xi, yi, ri, thi = X
-        ep = epipolar_value_parallel(s, p, i, K, R, t)
-        residual = (xi - p[0,i])**2/p_sd[0] + (yi - p[1,i])**2/p_sd[1] \
-            + (ri - s[0,i])**2/s_sd[0] + (thi - s[1,i])**2/s_sd[1] \
-            + lambda_ * ep
+        si = np.vstack((ri, thi))
+        pi = np.vstack((xi, yi))
+        ep2 = epipolar_value_parallel(si, pi, K, R, t)
+        ep = epipolar_value(si, pi, K, R, t)
+        residual = (
+            (xi - p[0, i]) ** 2 / (p_sd[0] ** 2)
+            + (yi - p[1, i]) ** 2 / (p_sd[1] ** 2)
+            + (ri - s[0, i]) ** 2 / (s_sd[0] ** 2)
+            + (thi - s[1, i]) ** 2 / (s_sd[1] ** 2)
+            + lambda_ * abs(ep)
+        )
+        # if j == 30 or j == 0:
+        #     print(
+        #         # (xi - p[0, i]) ** 2 / (p_sd[0]**2),
+        #         # (yi - p[1, i]) ** 2 / (p_sd[1]**2),
+        #         # (ri - s[0, i]) ** 2 / (s_sd[0]**2),
+        #         # (thi - s[1, i]) ** 2 / (s_sd[1]**2),
+        #         f"j: {j} ep: {ep}",
+        #         f"j: {j} ep2: {ep2}",
+        #     )
+        if j < 50:
+            residuals[i, j] = residual
+            j += 1
         return residual
-    
+
+    residuals = -100.0 * np.ones((240, 50))
+
     p_mle = np.zeros(p.shape)
     s_mle = np.zeros(s.shape)
+    failed = 0
+    bounds = np.array(
+        [
+            [-K[0, 0], K[0, 0]],
+            [-K[0, 0], K[0, 0]],
+            [0.0, 10.0],
+            [-0.5, 0.5],
+        ]
+    )
     print("Running MLE...")
-    for i in tqdm(range(s.shape[1])):
-        x0 = np.vstack((p[0, i], p[1, i], s[0, i], s[1, i])).reshape(-1) 
-        result = least_squares(compute_residuals, x0, method="trf")
+    for i in tqdm(range(s.shape[1])):  # for each point
+        j = 0   # for residuals
+
+        # Optimize point
+        x0 = np.vstack((p[0, i], p[1, i], s[0, i], s[1, i])).reshape(-1)
+        result = minimize(objective_func, x0, method="Nelder-Mead", bounds=bounds)
         p_mle[:, i] = result.x[:2]
         s_mle[:, i] = result.x[2:]
+
+        # Process result
+        # if i % 10 == 0:
+            # print(f"\n\tpoint i: {i}\n\tx0: {x0}\n\tx: {result.x}\n\tcost: {result.fun}")
+        # if i == 50:
+        #     plt.figure()
+        #     plt.plot(residuals[0, :])
+        #     plt.plot(residuals[25, :])
+        #     plt.plot(residuals[50, :])
+        #     plt.xlabel("Iteration")
+        #     plt.ylabel("Residual")
+        if result.success is not True:
+            failed += 1
+            print(f"Optimization failed for point {i}")
+            print(result.message)
+    print(f"Failed: {failed}")
     return p_mle, s_mle
 
 
 def reconstruct(p, K, Zo):
     """
-    Reconstruction of 3D points from Z-values
-    using the optical projection model.
+    Reconstruction of 3D points from Z-values using the optical
+    projection model.
     """
     f = K[0, 0]
     deltax, deltay = K[0, 2], K[1, 2]
@@ -338,6 +400,23 @@ def reconstruct(p, K, Zo):
     Yo = (p[1, :] - deltay) * Zo / f
     Qo_rec = np.vstack((Xo, Yo, Zo))
     return Qo_rec
+
+
+def plot_epipolar_values(s, p, s_n, p_n, K, R, t):
+    """
+    Plot the epipolar values for a pair of optical and sonar measurements.
+    """
+    epi = [epipolar_value(s[:, i], p[:, i], K, R, t) for i in range(s.shape[1])]
+    epi_noise = [
+        epipolar_value(s_n[:, i], p_n[:, i], K, R, t) for i in range(s.shape[1])
+    ]
+    plt.figure()
+    plt.title("Epipolar values of all points")
+    plt.plot(epi, label="True points")
+    plt.plot(epi_noise, label="Noisy points")
+    plt.xlabel("Point index")
+    plt.ylabel("Epipolar value")
+    plt.legend()
 
 
 def plot_3d(Q, title, limit=None, **kwargs):
@@ -355,7 +434,63 @@ def plot_3d(Q, title, limit=None, **kwargs):
     ax.set_title(title)
 
 
-def plot_3d_reconstruction(Q_true, Q_rec, title, scale=10.):
+def plot_comparison(Q_true, Q1, Q2, title1, title2, scale):
+    fig = plt.figure(figsize=(12, 6))
+    # First plot
+    ax = fig.add_subplot(1, 2, 1, projection="3d")
+    ax.scatter(
+        Q_true[0, :],
+        Q_true[1, :],
+        Q_true[2, :],
+        color=((0, 0, 1, 0.5)),
+        label="True",
+    )
+    ax.scatter(
+        Q1[0, :],
+        Q1[1, :],
+        Q1[2, :],
+        c="r",
+        label="Reconstructed",
+        marker="X",
+    )
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.set_xlim(-scale, scale)
+    ax.set_ylim(-scale, scale)
+    ax.set_zlim(-scale, scale)
+    ax.set_aspect("equal")
+    ax.legend()
+    ax.set_title(title1)
+    # Second plot
+    ax = fig.add_subplot(1, 2, 2, projection="3d")
+    ax.scatter(
+        Q_true[0, :],
+        Q_true[1, :],
+        Q_true[2, :],
+        color=((0, 0, 1, 0.5)),
+        label="True",
+    )
+    ax.scatter(
+        Q2[0, :],
+        Q2[1, :],
+        Q2[2, :],
+        c="r",
+        label="Reconstructed",
+        marker="X",
+    )
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.set_xlim(-scale, scale)
+    ax.set_ylim(-scale, scale)
+    ax.set_zlim(-scale, scale)
+    ax.set_aspect("equal")
+    ax.legend()
+    ax.set_title(title2)
+
+
+def plot_3d_reconstruction(Q_true, Q_rec, title, scale=10.0):
     """
     Plot the 3D points of the true and reconstructed scene.
 
@@ -366,20 +501,33 @@ def plot_3d_reconstruction(Q_true, Q_rec, title, scale=10.):
     """
     fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(projection="3d")
-    ax.scatter(Q_true[0, :], Q_true[1, :], Q_true[2, :], color=((0,0,1,0.5)), label="True")
-    ax.scatter(Q_rec[0, :], Q_rec[1, :], Q_rec[2, :], c="r", label="Reconstructed", marker="X")
+    ax.scatter(
+        Q_true[0, :],
+        Q_true[1, :],
+        Q_true[2, :],
+        color=((0, 0, 1, 0.5)),
+        label="True",
+    )
+    ax.scatter(
+        Q_rec[0, :],
+        Q_rec[1, :],
+        Q_rec[2, :],
+        c="r",
+        label="Reconstructed",
+        marker="X",
+    )
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Z (m)")
-    ax.set_xlim(-scale, scale)
-    ax.set_ylim(-scale, scale)
-    ax.set_zlim(-scale, scale)
+    # ax.set_xlim(-scale, scale)
+    # ax.set_ylim(-scale, scale)
+    # ax.set_zlim(-scale, scale)
     ax.set_aspect("equal")
     ax.legend()
     ax.set_title(title)
 
 
-def plot_dual_projection(s, p, K):
+def plot_dual_projection(s, p, K, title):
     """
     Plot the results of the optical and sonar projection models.
 
@@ -388,15 +536,15 @@ def plot_dual_projection(s, p, K):
         s: 2D points in {sonar} as (r, theta), shape (2, n)
         K: Camera intrinsics matrix
     """
-    fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-    fig.suptitle("Projection of camera and sonar")
+    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+    fig.suptitle(title)
     ax[0].scatter(p[0, :], p[1, :], s=5)
     ax[0].set_title("Camera frame")
     ax[0].set_xlabel("x (pixels)")
     ax[0].set_ylabel("y (pixels)")
     ax[0].set_aspect("equal")
-    ax[0].set_xlim(-K[0, 0]/2 + K[0, 2], K[0, 0]/2 + K[0, 2])
-    ax[0].set_ylim(-K[0, 0]/2 + K[1, 2], K[0, 0]/2 + K[1, 2])
+    # ax[0].set_xlim(-K[0, 0] / 2 + K[0, 2], K[0, 0] / 2 + K[0, 2])
+    # ax[0].set_ylim(-K[0, 0] / 2 + K[1, 2], K[0, 0] / 2 + K[1, 2])
     ax[0].set_aspect("equal")
     ax[1].scatter(s[1, :], s[0, :], s=5)
     ax[1].set_title("Sonar frame")
@@ -406,19 +554,19 @@ def plot_dual_projection(s, p, K):
 
 def main():
     # World config
-    d_baseline = 0.1  # baseline dist between {camera} and {sonar}
-    d_plane = 10.0 # plane dist
-    scale = 100.
+    d_baseline = 0.25  # baseline dist between {camera} and {sonar}
+    d_plane = 2.0  # plane dist
+    scale = 1.0
 
     Qw = scale * box3d(n=16)  # 3D points centered around origin of {world}
     # tw = np.array([[0.5, 0., 0.]]).T
     # Qw = Qw + tw      # offset box
-    
+
     # Parallel camera configuration, R and t from the paper
     t_os = np.array([[d_baseline, 0, 0]]).T
-    Ros = np.array([[1, 0, 0], 
-                  [0, 0, 1], 
-                  [0, -1, 0]])  # 90 degree rotation around x-axis
+    Ros = np.array(
+        [[1, 0, 0], [0, 0, 1], [0, -1, 0]]
+    )  # 90 degree rotation around x-axis
 
     # Camera extrinsics, {world} to {camera}
     t_wo_x = 0.0
@@ -429,7 +577,7 @@ def main():
 
     # Camera intrinsics
     f = 800
-    delta_x, delta_y = (0,0)
+    delta_x, delta_y = (0, 0)
     K = camera_intrinsic(f, (delta_x, delta_y))
 
     # Sonar extrinsics, {camera} to {sonar}
@@ -439,50 +587,60 @@ def main():
     p = project_optical(K, Rwo, t_wo, Qw)
     s = project_sonar(Qs)
 
-    # # Check epipolar values should be zero without noise
-    # epi = [epipolar_value(s, p, i, K, Ros, t_os) for i in range(s.shape[1])]
-    # epi = [epipolar_value_parallel(s, p, i, K, Ros, t_os) for i in range(s.shape[1])]
-    # plt.figure()
-    # plt.plot(epi)
-
     # Add noise
-    s_noise_sd = (0.01, 0.00175) # (r, theta)
-    p_noise_sd = (1, 1) # (x, y)
+    s_noise_sd = (0.01, 0.00175)  # (r, theta)
+    p_noise_sd = (1, 1)  # (x, y)
     s_n, p_n = add_noise(s, p, s_noise_sd, p_noise_sd)
 
-    # Optimize
-    lambda_ = 100.  # regularization
-    p_mle, s_mle = maximum_likelihood_estimate(s_n, p_n, K, Ros, t_os, s_noise_sd, p_noise_sd, lambda_)
+    # Check epipolar values should be zero without noise
+    plot_epipolar_values(s, p, s_n, p_n, K, Ros, t_os)
 
+    # Optimize
+    epi_noise = np.array(
+        [
+            epipolar_value(s_n[:, i], p_n[:, i], K, Ros, t_os)
+            for i in range(s.shape[1])
+        ]
+    )
+    # mean_ep = np.median(abs(epi_noise))
+    # print(f"Mean epipolar value: {mean_ep}")
+    lambda_ = 3e-3  # regularization
+    p_mle, s_mle = maximum_likelihood_estimate(
+        s_n, p_n, K, Ros, t_os, s_noise_sd, p_noise_sd, lambda_
+    )
+
+    # Azimuth solution
     # Reconstruct
     Zo_azi_mle = azimuth_solution(s_mle, p_mle, K, Ros, t_os)
-    Zo_azi = azimuth_solution(s, p, K, Ros, t_os)   # no noise
+    Zo_azi = azimuth_solution(s_n, p_n, K, Ros, t_os)
     Qo_azi_mle = reconstruct(p, K, Zo_azi_mle)
     Qo_azi = reconstruct(p, K, Zo_azi)
+    Qw_azi = np.linalg.inv(Rwo) @ (Qo_azi - t_wo) # to {world}
+    Qw_azi_mle = np.linalg.inv(Rwo) @ (Qo_azi_mle - t_wo) # to {world}
 
-    # Zo_range = range_solution(s, p, K, Ros, t_os)
-    # Zo_m = m_solution(s, p, Ros, t_os)
-    # Qo_range = reconstruct(p, K, Zo_range)
-    # Qo_m = reconstruct(p, K, Zo_m)
-
+    # Rangle solution
+    Zo_range = range_solution(s, p, K, Ros, t_os)
+    Qo_range = reconstruct(p, K, Zo_range)
     # Qo_range_origin = np.mean(Qo_range, axis=1).reshape(-1, 1)
-    # Qo_azi_origin = np.mean(Qo_azi, axis=1).reshape(-1, 1)
-    # Qo_m_origin = np.mean(Qo_m, axis=1).reshape(-1, 1)
-
     # Qo_range_align = Qw + Qo_range_origin
-    # Qo_azi_align = Qw + Qo_azi_origin
-    # Qo_m_align = Qw + Qo_m_origin
+    Qw_range = np.linalg.inv(Rwo) @ (Qo_range - t_wo) # to {world}
 
-    # Transform to {world}
-    # Qw_range = np.linalg.inv(Rwo) @ (Qo_range - t_wo)
-    Qw_azi = np.linalg.inv(Rwo) @ (Qo_azi - t_wo)
-    Qw_azi_mle = np.linalg.inv(Rwo) @ (Qo_azi_mle - t_wo)
-    # Qw_m = np.linalg.inv(Rwo) @ (Qo_m - t_wo)
+    # m solution
+    # Zo_m = m_solution(s, p, Ros, t_os)
+    # Qo_m = reconstruct(p, K, Zo_m)
+    # Qo_m_origin = np.mean(Qo_m, axis=1).reshape(-1, 1)
+    # Qo_m_align = Qw + Qo_m_origin
+    # Qw_m = np.linalg.inv(Rwo) @ (Qo_m - t_wo) # to {world}
 
     # Plot
-    # plot_3d_reconstruction(Qw, Qw_range, "Range solution in {world}")
-    plot_3d_reconstruction(Qw, Qw_azi, "Azimuth solution in {world}", scale)
-    plot_3d_reconstruction(Qw, Qw_azi_mle, "MLE Azimuth solution in {world}", scale)
+    plot_dual_projection(s, p, K, "Projection of camera and sonar")
+    plot_dual_projection(s_n, p_n, K, "Projection of noisy measurements")
+
+    plot_3d_reconstruction(Qw, Qw_range, "Range solution in {world}")
+    # plot_3d_reconstruction(Qw, Qw_azi, "Azimuth solution in {world}", scale)
+    # plot_3d_reconstruction(
+    #     Qw, Qw_azi_mle, "MLE Azimuth solution in {world}", scale
+    # )
     # plot_3d_reconstruction(Qw, Qw_m, "m solution in {world}")
 
     # plot_3d_reconstruction(Qo_range_align, Qo_range, "Range solution by aligning box origins")
@@ -491,7 +649,14 @@ def main():
 
     # plot_3d(Qw, "3D points in {world}")
     # plot_3d(Qs, "3D points in {sonar}")
-    # plot_dual_projection(s, p, K)
+    plot_comparison(
+        Qw,
+        Qw_azi,
+        Qw_azi_mle,
+        "Azimuth solution",
+        r"MLE Azimuth solution $\lambda=$" + str(lambda_),
+        scale,
+    )
     plt.show()
 
 
