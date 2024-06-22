@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="gui" default="true"/>
+	<arg name="paused" default="false"/>
+	<arg name="world_name" default="$(find dave_worlds)/worlds/dave_ocean_waves.world"/>
+	<arg name="namespace" default="caracara"/>
+	<arg name="velocity_control" default="false"/>
+	<arg name="joy_id" default="0"/>
+	<arg name="debug" default="false"/>
+	<arg name="verbose" default="false"/>
+	<arg name="x" default="6"/>
+	<arg name="y" default="0"/>
+	<arg name="z" default="-92"/>
+	<arg name="roll" default="0"/>
+	<arg name="pitch" default="0"/>
+	<arg name="yaw" default="0"/>
+
+	<!-- Use Gazebo's empty_world.launch with dave_ocean_waves.world -->
+	<include file="$(find gazebo_ros)/launch/empty_world.launch">
+        <arg name="world_name" value="$(find opti_acoustic)/worlds/sphere_grid.world"/>
+		<arg name="paused" value="$(arg paused)"/>
+		<arg name="use_sim_time" value="true"/>
+		<arg name="gui" value="$(arg gui)"/>
+		<arg name="headless" value="false"/>
+		<arg name="debug" value="$(arg debug)"/>
+		<arg name="verbose" value="$(arg verbose)"/>
+	</include>
+
+    <include file="$(find caracara_description)/launch/upload_caracara.launch"/>
+
+  	<!-- <include file="$(find dave_nodes)/launch/caracara_thrusterop.launch">
+    	<arg name="joy_id" value="$(arg joy_id)"/>
+    	<arg name="namespace" value="$(arg namespace)"/>
+  	</include> -->
+
+	<!-- Spawn robot model -->
+    <node name="spawn_caracara" pkg="gazebo_ros" type="spawn_model"
+  		respawn="false" output="screen"
+  		args="-urdf -x $(arg x) -y $(arg y) -z $(arg z) -R $(arg roll) -P $(arg pitch) -Y $(arg yaw) -model $(arg namespace) -param /$(arg namespace)/caracara"/>
+
+  	<node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" respawn="true" output="screen">
+  		<remap from="robot_description" to="/$(arg namespace)/caracara"/>
+  	</node>
+
+	<node pkg="tf" type="static_transform_publisher" name="multibeam_sonar_base_link" args="0 0 0 0 0 0 world forward_sonar_optical_link 50" />
+
+
+	<!-- Start RViz  -->
+	<node name="rviz" pkg="rviz" type="rviz" output="screen" args="-d $(find opti_acoustic)/rviz/opti_acoustic.rviz"/>
+
+</launch>

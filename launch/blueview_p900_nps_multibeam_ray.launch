@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<launch>
+
+  <arg name="verbose" default="false"/>
+
+    <!-- Initial position and heading of the vehicle (wrt Gazebo's inertial frame)  -->
+  <arg name="x" default="0"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="-23.0"/>
+  <arg name="yaw" default="0.0"/>
+  <arg name="use_ned_frame" default="true"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find opti_acoustic)/worlds/sphere_grid.world"/>
+    <arg name="verbose" value="$(arg verbose)"/>
+  </include>
+
+  <!-- Separate window for image_view of sonar image -->
+  <!-- <node name="image_view_sonar" pkg="image_view" type="image_view"
+        args="image:=/blueview_p900/sonar_image">
+    <param name="window_name" value="blueview_p900" />
+    <param name="autosize" value="true" />
+    <param name="filename_format" value="/tmp/SonarImage_capture_%04i.jpg" />
+  </node> -->
+
+  <node pkg="tf" type="static_transform_publisher" name="multibeam_sonar_base_link" args="0 0 0 0 0 0 world forward_sonar_optical_link 50" />
+
+    <!-- Add the BlueROV2 vehicle to the world 
+  <include file="$(find opti_acoustic)/launch/upload.launch">
+      <arg name="x" default="$(arg x)"/>
+      <arg name="y" default="$(arg y)"/>
+      <arg name="z" default="$(arg z)"/>
+      <arg name="yaw" default="$(arg yaw)"/>
+      <arg name="use_ned_frame" value="$(arg use_ned_frame)"/>
+      <arg name="gazebo_tf" value="false"/>
+  </include> -->
+
+  <!-- Start RViz  -->
+  <node name="rviz" pkg="rviz" type="rviz" output="screen" args="-d $(find opti_acoustic)/rviz/opti_acoustic.rviz"/>
+  <!-- <node name="rviz" pkg="rviz" type="rviz" output="screen" /> -->
+
+</launch>

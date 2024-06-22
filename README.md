@@ -9,11 +9,15 @@ A simulation is created in [`sonar_simulation.py`](/scripts/sonar_simulation.py)
 
 A 3D box is projected using the asymmetric optical and sonar projection models to create 2D camera and sonar images.
 
-<img src="assets/Qw.png" width="400" class="center">
-<img src="assets/projection_noisy.png" width="800">
+<div style="text-align:center">
+    <img src="assets/Qw.png" width="400" class="center">
+    <img src="assets/projection_noisy.png" width="800">
+</div>
 
 Only the azimuth solution was successfully replicated to recover the depth information. The image below shows the result of the indirect method to reconstruct the object with noisy measurements, using the epipolar constraint as a regularization parameter.
 
-<img src="assets/cube_reconstruction.png" width="800">
+<div style="text-align:center">
+    <img src="assets/cube_reconstruction.png" width="800">
+</div>
 
 The configuration for the simulation can be easily adjusted in the [config/sim_config.yaml](config/sim_config.yaml) file.
